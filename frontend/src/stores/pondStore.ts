@@ -21,6 +21,8 @@ export interface PondStat {
   lastObservationDate: string;
   /** 当期密度（最近一次观测） */
   currentDensity: number;
+  /** 当前水位（最近一次观测，cm）——放行时与安全线对账 */
+  currentLevelCm: number;
   /** 最近蒸发量（mm/d） */
   lastEvapMm: number;
   /** 观测条数 */
@@ -160,6 +162,7 @@ function createPondStore() {
         pondId: pond.id,
         lastObservationDate: latestObs === null ? '' : latestObs.date,
         currentDensity: latestObs === null ? 0 : latestObs.densityGcm3,
+        currentLevelCm: latestObs === null ? 0 : latestObs.levelCm,
         lastEvapMm: latestObs === null ? 0 : latestObs.evapMm,
         observationCount: pondObs.length,
         volumeM3: pondVolumeM3(pond.areaM2, pond.depthCm),
@@ -179,6 +182,7 @@ function createPondStore() {
         pondId,
         lastObservationDate: '',
         currentDensity: 0,
+        currentLevelCm: 0,
         lastEvapMm: 0,
         observationCount: 0,
         volumeM3: 0,

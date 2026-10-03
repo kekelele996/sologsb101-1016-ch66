@@ -31,6 +31,7 @@ export default function ExportView() {
     const schedules = store.state.schedules;
     const passCount = assays.filter((row) => effectiveVerdict(row) === '达标').length;
     const done = schedules.filter((row) => row.state === '已出卤').length;
+    const review = schedules.filter((row) => row.state === '待复核').length;
     const readyPonds = new Set(assays.filter((row) => effectiveVerdict(row) === '达标').map((row) => row.pondId)).size;
     return {
       ponds: ponds.length,
@@ -42,6 +43,7 @@ export default function ExportView() {
       passPct: assays.length === 0 ? 0 : Math.round((passCount / assays.length) * 1000) / 10,
       donePct: schedules.length === 0 ? 0 : Math.round((done / schedules.length) * 1000) / 10,
       readyPonds,
+      review,
     };
   });
 
@@ -107,13 +109,20 @@ export default function ExportView() {
           hint="区间内判定为「达标」的化验记录占比"
         />
         <StatBadge label="出卤候选池" value={summary().readyPonds} suffix="口" tone="success" />
+        <StatBadge
+          label="待复核走水"
+          value={summary().review}
+          suffix="条"
+          tone={summary().review > 0 ? 'danger' : 'default'}
+          hint="化验室改判 / 撤单 / 新结论顶替后退回，等待调度员重新确认"
+        />
         <StatBadge label="出卤完成率" value={`${summary().donePct}%`} percent={summary().donePct} tone="primary" />
         <StatBadge
           label="数据结构版本"
           value={`v${DB_SCHEMA_VERSION}`}
           suffix={`· ${DB_NAME}`}
           tone="default"
-          hint="IndexedDB 库名与结构版本；v1 建表与 pondId+date 复合索引，v2 新增 evapMm 并迁移旧记录"
+          hint="v1 建表与复合索引；v2 新增 evapMm；v3 走水放行接入化验室对账，历史编排按池补归属放行依据"
         />
       </div>
 

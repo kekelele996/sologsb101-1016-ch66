@@ -8,11 +8,13 @@ import { NAV_ITEMS } from './router';
 import { usePondStore } from './stores/pondStore';
 import { useObservationStore } from './stores/observationStore';
 import { useScheduleStore } from './stores/scheduleStore';
+import { ROLE_LABEL, useRoleStore, type WorkRole } from './stores/roleStore';
 
 export default function App(props: RouteSectionProps) {
   const pondStore = usePondStore();
   const observationStore = useObservationStore();
   const scheduleStore = useScheduleStore();
+  const roleStore = useRoleStore();
 
   onMount(() => {
     void pondStore.loadAll();
@@ -41,6 +43,17 @@ export default function App(props: RouteSectionProps) {
           </div>
         </div>
         <div class="flex flex-wrap items-center gap-2 text-xs">
+          <label class="flex items-center gap-1.5 rounded-full bg-white/15 px-2.5 py-1">
+            <span>岗位</span>
+            <select
+              class="rounded bg-brine-900/60 px-1 py-0.5 text-white outline-none"
+              value={roleStore.role()}
+              onChange={(event) => roleStore.setRole(event.currentTarget.value as WorkRole)}
+            >
+              <option value="dispatch">{ROLE_LABEL.dispatch}</option>
+              <option value="lab">{ROLE_LABEL.lab}</option>
+            </select>
+          </label>
           <span class="rounded-full bg-white/15 px-2.5 py-1">当前池系：{currentSeries()}</span>
           <span class="rounded-full bg-white/15 px-2.5 py-1">池 {counts().ponds} 口</span>
           <span class="rounded-full bg-white/15 px-2.5 py-1">闸门 {counts().gates} 条</span>
@@ -71,8 +84,10 @@ export default function App(props: RouteSectionProps) {
 
           <div class="mt-4 hidden rounded-lg border border-slate-200 bg-white p-3 text-xs leading-relaxed text-slate-500 lg:block">
             <p class="mb-1 font-semibold text-slate-700">数据存储</p>
-            <p>库名 gbbrinepond（IndexedDB / Dexie），结构版本 v2。</p>
-            <p class="mt-1">v1 建表与 pondId+date 复合索引；v2 新增 evapMm 并迁移旧记录。</p>
+            <p>库名 gbbrinepond（IndexedDB / Dexie），结构版本 v3。</p>
+            <p class="mt-1">v1 建表与 pondId+date 复合索引；v2 新增 evapMm；v3 走水放行接入化验对账，历史编排按池补归属。</p>
+            <p class="mt-2 mb-1 font-semibold text-slate-700">岗位分工</p>
+            <p>调度室放行走水（对账单据 + 水位）；化验室登记分析单。改判 / 撤单自动退回「待复核」。</p>
           </div>
         </nav>
 
