@@ -7,12 +7,14 @@ import { A, type RouteSectionProps } from '@solidjs/router';
 import { NAV_ITEMS } from './router';
 import { usePondStore } from './stores/pondStore';
 import { useObservationStore } from './stores/observationStore';
+import { useRoleStore } from './stores/roleStore';
 import { useScheduleStore } from './stores/scheduleStore';
 
 export default function App(props: RouteSectionProps) {
   const pondStore = usePondStore();
   const observationStore = useObservationStore();
   const scheduleStore = useScheduleStore();
+  const roleStore = useRoleStore();
 
   onMount(() => {
     void pondStore.loadAll();
@@ -41,6 +43,22 @@ export default function App(props: RouteSectionProps) {
           </div>
         </div>
         <div class="flex flex-wrap items-center gap-2 text-xs">
+          <span class="mr-1 inline-flex overflow-hidden rounded-full border border-white/30 text-white">
+            <For each={roleStore.options}>
+              {(item) => (
+                <button
+                  type="button"
+                  class={`px-3 py-1 transition ${
+                    roleStore.role() === item ? 'bg-white text-brine-800 font-semibold' : 'bg-white/10 hover:bg-white/20'
+                  }`}
+                  onClick={() => roleStore.setRole(item)}
+                  title={item === '调度室' ? '操作走水编排；水样分析单只读' : '登记水样分析单；走水编排只读且不可排序'}
+                >
+                  {item}
+                </button>
+              )}
+            </For>
+          </span>
           <span class="rounded-full bg-white/15 px-2.5 py-1">当前池系：{currentSeries()}</span>
           <span class="rounded-full bg-white/15 px-2.5 py-1">池 {counts().ponds} 口</span>
           <span class="rounded-full bg-white/15 px-2.5 py-1">闸门 {counts().gates} 条</span>
@@ -71,8 +89,8 @@ export default function App(props: RouteSectionProps) {
 
           <div class="mt-4 hidden rounded-lg border border-slate-200 bg-white p-3 text-xs leading-relaxed text-slate-500 lg:block">
             <p class="mb-1 font-semibold text-slate-700">数据存储</p>
-            <p>库名 gbbrinepond（IndexedDB / Dexie），结构版本 v2。</p>
-            <p class="mt-1">v1 建表与 pondId+date 复合索引；v2 新增 evapMm 并迁移旧记录。</p>
+            <p>库名 gbbrinepond（IndexedDB / Dexie），结构版本 v3。</p>
+            <p class="mt-1">v1 建表与 pondId+date 复合索引；v2 新增 evapMm 并迁移旧记录；v3 走水放行接入化验对账，旧编排按池补放行依据。</p>
           </div>
         </nav>
 

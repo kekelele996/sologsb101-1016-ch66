@@ -12,6 +12,7 @@ import FilterBar from '../components/common/FilterBar';
 import StatBadge from '../components/common/StatBadge';
 import StageTag from '../components/common/StageTag';
 import { usePondStore } from '../stores/pondStore';
+import { useRoleStore } from '../stores/roleStore';
 import {
   ASSAY_VERDICT_OPTIONS,
   type Assay,
@@ -52,6 +53,8 @@ function emptyDraft(pondId: string): AssayDraft {
 
 export default function AssayEntry() {
   const pondStore = usePondStore();
+  const roleStore = useRoleStore();
+  const canEdit = (): boolean => roleStore.role() === '化验室';
 
   const [rows, setRows] = createSignal<Assay[]>([]);
   const [loading, setLoading] = createSignal(true);
@@ -197,17 +200,21 @@ export default function AssayEntry() {
     };
     if (editingId() === null) {
       const stamp = nowIso();
-      await putAssay({ ...payload, createdAt: stamp, updatedAt: stamp, revision: 2 });
+      await putAssay({ ...payload, createdAt: stamp, updatedAt: stamp, revision: 3 });
       setMessage(
         payload.verdict === '达标'
-          ? `已录入 ${pondLabel(payload.pondId)} 的化验记录，判定达标，该池进入出卤候选`
-          : `已录入 ${pondLabel(payload.pondId)} 的化验记录，判定为「${payload.verdict}」`,
+          ? `已录入 ${pondLabel(payload.pondId)} 的化验记录，判定达标，该池可放行走水`
+          : `已录入 ${pondLabel(payload.pondId)} 的化验记录，判定为「${payload.verdict}」；该池已放行的走水编排（若有）将退回待复核`,
       );
     } else {
       const existing = rows().find((row) => row.id === editingId());
       if (existing === undefined) return;
       await putAssay({ ...existing, ...payload });
-      setMessage('化验记录已更新');
+      setMessage(
+        payload.verdict === '达标'
+          ? '化验记录已更新'
+          : '化验记录已更新：结论改回未达标，引用该分析单放行的走水编排已退回「待复核」',
+      );
     }
     setDialogOpen(false);
   };
@@ -217,7 +224,7 @@ export default function AssayEntry() {
     if (row === null) return;
     await removeAssay(row.id);
     setDeleting(null);
-    setMessage('化验记录已删除');
+    setMessage('化验记录已撤销：以此为放行依据的走水编排已退回「待复核」，等调度员重新确认');
   };
 
   return (
@@ -241,12 +248,20 @@ export default function AssayEntry() {
         <div class="rounded-lg border border-brine-200 bg-brine-50 px-3.5 py-2 text-sm text-brine-800">{message()}</div>
       </Show>
 
+      <Show when={!canEdit()}>
+        <div class="rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2 text-sm text-amber-800">
+          当前为「调度室」角色：水样分析单只读，登记与达标结论由化验室维护。改判或撤单后，相关走水编排会自动退回「待复核」。
+        </div>
+      </Show>
+
       <section class="rounded-xl border border-slate-200 bg-white p-4">
         <header class="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 class="text-[15px] font-semibold text-slate-800">离子组分分析录入与达标判定</h2>
-          <button type="button" class={BTN_PRIMARY} onClick={openCreate} disabled={pondStore.state.ponds.length === 0}>
-            + 录入化验
-          </button>
+          <Show when={canEdit()}>
+            <button type="button" class={BTN_PRIMARY} onClick={openCreate} disabled={pondStore.state.ponds.length === 0}>
+              + 录入化验
+            </button>
+          </Show>
         </header>
 
         <FilterBar
@@ -336,14 +351,19 @@ export default function AssayEntry() {
                           </span>
                         </td>
                         <td class="px-3 py-2.5">
-                          <div class="flex gap-2">
-                            <button class="text-xs text-brine-700 hover:underline" onClick={() => openEdit(row)}>
-                              编辑
-                            </button>
-                            <button class="text-xs text-rose-600 hover:underline" onClick={() => setDeleting(row)}>
-                              删除
-                            </button>
-                          </div>
+                          <Show
+                            when={canEdit()}
+                            fallback={<span class="text-xs text-slate-400">化验室维护</span>}
+                          >
+                            <div class="flex gap-2">
+                              <button class="text-xs text-brine-700 hover:underline" onClick={() => openEdit(row)}>
+                                编辑
+                              </button>
+                              <button class="text-xs text-rose-600 hover:underline" onClick={() => setDeleting(row)}>
+                                撤销
+                              </button>
+                            </div>
+                          </Show>
                         </td>
                       </tr>
                     );
@@ -561,7 +581,7 @@ export default function AssayEntry() {
 
       <AppDialog
         open={deleting() !== null}
-        title="确认删除化验记录？"
+        title="确认撤销水样分析单？"
         width="max-w-lg"
         onClose={() => setDeleting(null)}
         footer={
@@ -570,13 +590,13 @@ export default function AssayEntry() {
               取消
             </button>
             <button class={BTN_DANGER} onClick={() => void confirmDelete()}>
-              确认删除
+              确认撤销
             </button>
           </>
         }
       >
         <p class="text-sm leading-relaxed text-slate-600">
-          将删除「{pondLabel(deleting()?.pondId ?? '')}」在 {deleting()?.date} 的化验记录，删除后该池可能不再属于出卤候选。
+          将撤销「{pondLabel(deleting()?.pondId ?? '')}」在 {deleting()?.date} 的化验记录。以此为放行依据的走水编排会立即退回「待复核」，等调度员重新确认，不能带着旧结论继续走水。
         </p>
       </AppDialog>
     </div>

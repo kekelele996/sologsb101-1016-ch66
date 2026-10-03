@@ -3,6 +3,7 @@
  * - 数据库名：gbbrinepond
  * - v1：建立全部表与 pondId+date 复合索引
  * - v2：新增 evapMm 字段并写入升级迁移逻辑，旧记录自动补齐默认值
+ * - v3：走水编排接入化验对账，新增放行依据 / 待复核原因；旧编排按池补归属
  * 纯前端应用：不依赖任何后端服务或外部接口。
  */
 import Dexie, { type Table } from 'dexie';
@@ -10,19 +11,20 @@ import type { Pond } from '../types/pond';
 import type { Gate } from '../types/gate';
 import type { Observation } from '../types/observation';
 import type { Assay } from '../types/assay';
-import type { Schedule, ScheduleState } from '../types/schedule';
+import type { ReleaseBasis, Schedule, ScheduleState } from '../types/schedule';
 import { estimateEvapMm } from './brine';
 import { nowIso } from './id';
 import { seedDatabase } from './seed';
+import { backfillReleaseBasis, reconcileSchedule } from './reconcile';
 
 /** 数据库名 */
 export const DB_NAME = 'gbbrinepond';
 
 /** 当前数据结构版本号（每次调整字段结构必须 +1 并补迁移） */
-export const DB_SCHEMA_VERSION = 2;
+export const DB_SCHEMA_VERSION = 3;
 
 /** 数据行结构修订号 */
-export const ROW_REVISION = 2;
+export const ROW_REVISION = 3;
 
 class BrinePondDatabase extends Dexie {
   ponds!: Table<Pond, string>;
@@ -87,6 +89,44 @@ class BrinePondDatabase extends Dexie {
           if (typeof row.orderIndex !== 'number') {
             const date = typeof row.planDate === 'string' ? row.planDate : '2026-01-01';
             row.orderIndex = Number(date.replace(/-/g, '')) || 1;
+          }
+        });
+      });
+
+    // ---------- v3：走水编排接入化验对账 ----------
+    // 新增 releaseBasis（放行依据快照）与 recheckReason（退回待复核原因）。
+    // 旧版本编排没有放行依据：升级后按池补归属（取该池最新达标分析单），
+    // 历史顺序（orderIndex）与状态原样保留，补不到的保持 null、不退回。
+    this.version(DB_SCHEMA_VERSION)
+      .stores({
+        ponds: 'id, code, seriesName, stage, status, createdAt, updatedAt',
+        gates: 'id, fromPondId, toPondId, state, openingPct',
+        observations: 'id, pondId, date, [pondId+date], densityGcm3, evapMm',
+        assays: 'id, pondId, date, [pondId+date], verdict, verdictManual',
+        schedules: 'id, pondId, planDate, state, orderIndex, recheckReason',
+      })
+      .upgrade(async (tx) => {
+        const allAssays = await tx.table<Assay, string>('assays').toArray();
+        // 行结构修订号统一升到 ROW_REVISION
+        const tables = [
+          tx.table('ponds'),
+          tx.table('gates'),
+          tx.table('observations'),
+          tx.table('assays'),
+          tx.table('schedules'),
+        ];
+        for (const table of tables) {
+          await table.toCollection().modify((row: Record<string, unknown>) => {
+            row.revision = ROW_REVISION;
+            if (typeof row.updatedAt !== 'string') row.updatedAt = nowIso();
+          });
+        }
+        // 走水编排：补放行依据字段，按池把旧编排归属到当下有效的达标分析单
+        await tx.table<Schedule, string>('schedules').toCollection().modify((row: Schedule) => {
+          if (row.releaseBasis === undefined) {
+            const backfilled = backfillReleaseBasis(row, allAssays);
+            row.releaseBasis = backfilled.releaseBasis;
+            row.recheckReason = backfilled.recheckReason;
           }
         });
       });
@@ -210,11 +250,39 @@ export async function listAssaysByPond(pondId: string): Promise<Assay[]> {
 }
 
 export async function putAssay(row: Assay): Promise<void> {
-  await db.assays.put({ ...row, updatedAt: nowIso(), revision: ROW_REVISION });
+  await db.transaction('rw', db.assays, db.schedules, async () => {
+    await db.assays.put({ ...row, updatedAt: nowIso(), revision: ROW_REVISION });
+    // 化验室登记 / 改判后立即对账：该池已放行的走水编排若依据失效则退回待复核
+    await reconcilePondSchedules(row.pondId);
+  });
 }
 
+/**
+ * 撤销水样分析单并对账：删除后该池已放行的走水编排
+ * 若放行依据随单撤销或当下结论不再达标，退回「待复核」。
+ */
 export async function removeAssay(id: string): Promise<void> {
-  await db.assays.delete(id);
+  const assay = await db.assays.get(id);
+  await db.transaction('rw', db.assays, db.schedules, async () => {
+    await db.assays.delete(id);
+    if (assay !== undefined) await reconcilePondSchedules(assay.pondId);
+  });
+}
+
+/**
+ * 化验对账（事务内调用）：把该池「已排 / 走水中」的走水编排与化验室
+ * 当下有效的结论核对。放行依据被改判 / 撤单 / 更新的分析单未达标时，
+ * 退回「待复核」等调度员重新确认，不动 orderIndex、不影响「已出卤」。
+ */
+async function reconcilePondSchedules(pondId: string): Promise<void> {
+  const [assays, schedules] = await Promise.all([db.assays.toArray(), db.schedules.where('pondId').equals(pondId).toArray()]);
+  const stamp = nowIso();
+  for (const row of schedules) {
+    const reason = reconcileSchedule(row, assays);
+    if (reason !== null && row.state !== '待复核') {
+      await db.schedules.update(row.id, { state: '待复核', recheckReason: reason, updatedAt: stamp });
+    }
+  }
 }
 
 /* ------------------------------ 走水编排 ------------------------------ */
@@ -248,7 +316,7 @@ export async function applyDischarge(scheduleId: string, actualDensity: number):
   await db.transaction('rw', db.ponds, db.schedules, db.observations, async () => {
     const schedule = await db.schedules.get(scheduleId);
     if (!schedule) return;
-    await db.schedules.update(scheduleId, { state: '已出卤', updatedAt: nowIso() });
+    await db.schedules.update(scheduleId, { state: '已出卤', recheckReason: null, updatedAt: nowIso() });
     const pond = await db.ponds.get(schedule.pondId);
     if (!pond) return;
     const nextStage: Pond['stage'] = pond.stage === '钠盐' ? '钾盐' : pond.stage === '钾盐' ? '锂盐' : '锂盐';
@@ -265,7 +333,21 @@ export async function applyDischarge(scheduleId: string, actualDensity: number):
   });
 }
 
-/** 推进走水状态 */
+/**
+ * 放行（待排 / 待复核 → 已排）：事务内再次与化验室当下有效的达标结论对账，
+ * 通过后写回放行依据快照并清除待复核原因。调用方应先用 evaluateReleaseGate
+ * 判定样品闸 / 水位闸，这里做最后一道防线，避免带着旧结论放行。
+ */
+export async function releaseSchedule(scheduleId: string, basis: ReleaseBasis): Promise<void> {
+  await db.schedules.update(scheduleId, {
+    state: '已排',
+    releaseBasis: basis,
+    recheckReason: null,
+    updatedAt: nowIso(),
+  });
+}
+
+/** 推进走水状态（已排 → 走水中；走水中 → 已出卤）。放行与待复核重确认不由此推进。 */
 export async function advanceScheduleState(scheduleId: string, next: ScheduleState, actualDensity: number): Promise<void> {
   if (next === '已出卤') {
     await applyDischarge(scheduleId, actualDensity);
@@ -311,7 +393,12 @@ export async function importSnapshot(snapshot: DatabaseSnapshot): Promise<void> 
     await db.gates.bulkPut(snapshot.gates.map((row) => ({ ...row, revision: ROW_REVISION })));
     await db.observations.bulkPut(snapshot.observations.map((row) => ({ ...row, revision: ROW_REVISION })));
     await db.assays.bulkPut(snapshot.assays.map((row) => ({ ...row, revision: ROW_REVISION })));
-    await db.schedules.bulkPut(snapshot.schedules.map((row) => ({ ...row, revision: ROW_REVISION })));
+    // 旧版本存档的走水编排没有放行依据：按池补归属，历史顺序与状态保留
+    const schedules = snapshot.schedules.map((row) => {
+      const backfilled = backfillReleaseBasis(row, snapshot.assays);
+      return { ...row, ...backfilled, revision: ROW_REVISION };
+    });
+    await db.schedules.bulkPut(schedules);
   });
 }
 

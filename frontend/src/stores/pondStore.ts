@@ -12,6 +12,7 @@ import type { Assay } from '../types/assay';
 import type { Schedule } from '../types/schedule';
 import { DB_SCHEMA_VERSION, ROW_REVISION, countAll, db, initDatabase, putPond, removePond } from '../utils/db';
 import { effectiveVerdict, pondVolumeM3 } from '../utils/brine';
+import { sortAssaysByDate } from '../utils/reconcile';
 import { nowIso, uuid } from '../utils/id';
 
 /** 单口池的派生统计，供 /ponds、/gates、/export 复用 */
@@ -21,6 +22,8 @@ export interface PondStat {
   lastObservationDate: string;
   /** 当期密度（最近一次观测） */
   currentDensity: number;
+  /** 最近水位（cm），用于走水放行的水位安全线判定 */
+  latestLevelCm: number;
   /** 最近蒸发量（mm/d） */
   lastEvapMm: number;
   /** 观测条数 */
@@ -151,15 +154,14 @@ function createPondStore() {
         .filter((row) => row.pondId === pond.id)
         .sort((a, b) => a.date.localeCompare(b.date));
       const latestObs = pondObs.length > 0 ? pondObs[pondObs.length - 1] : null;
-      const pondAssays = state.assays
-        .filter((row) => row.pondId === pond.id)
-        .sort((a, b) => a.date.localeCompare(b.date));
+      const pondAssays = sortAssaysByDate(state.assays.filter((row) => row.pondId === pond.id));
       const latestAssay = pondAssays.length > 0 ? pondAssays[pondAssays.length - 1] : null;
       const verdict = latestAssay === null ? '—' : effectiveVerdict(latestAssay);
       result[pond.id] = {
         pondId: pond.id,
         lastObservationDate: latestObs === null ? '' : latestObs.date,
         currentDensity: latestObs === null ? 0 : latestObs.densityGcm3,
+        latestLevelCm: latestObs === null ? 0 : latestObs.levelCm,
         lastEvapMm: latestObs === null ? 0 : latestObs.evapMm,
         observationCount: pondObs.length,
         volumeM3: pondVolumeM3(pond.areaM2, pond.depthCm),
@@ -179,6 +181,7 @@ function createPondStore() {
         pondId,
         lastObservationDate: '',
         currentDensity: 0,
+        latestLevelCm: 0,
         lastEvapMm: 0,
         observationCount: 0,
         volumeM3: 0,

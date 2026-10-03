@@ -8,10 +8,13 @@ import type { Pond } from '../types/pond';
 import type { Gate } from '../types/gate';
 import type { Observation } from '../types/observation';
 import type { Assay } from '../types/assay';
-import type { Schedule } from '../types/schedule';
+import type { ReleaseBasis, Schedule } from '../types/schedule';
 import { autoVerdict, estimateEvapMm } from './brine';
 
 const SEED_TIME = '2026-09-01T00:30:00.000Z';
+
+/** 放行依据快照的统一时间（演示数据：调度室 10 月 1 日完成放行） */
+const RELEASED_TIME = '2026-10-01T01:20:00.000Z';
 
 /** 固定 id，便于文档与深链验证 */
 export const SEED_IDS = {
@@ -74,6 +77,37 @@ function assay(
   });
 }
 
+/** 放行依据快照（达标分析单） */
+function releaseBasis(assayId: string, assayDate: string): ReleaseBasis {
+  return { assayId, assayDate, verdictSnapshot: '达标', releasedAt: RELEASED_TIME };
+}
+
+/** 生成走水编排，默认无放行依据（待排 / 已出卤） */
+function schedule(
+  id: string,
+  pondId: string,
+  planDate: string,
+  targetDensity: number,
+  volumeM3: number,
+  operator: string,
+  state: Schedule['state'],
+  orderIndex: number,
+  extra: Pick<Schedule, 'releaseBasis' | 'recheckReason'> = { releaseBasis: null, recheckReason: null },
+): Schedule {
+  return wrap<Schedule>({
+    id,
+    pondId,
+    planDate,
+    targetDensity,
+    volumeM3,
+    operator,
+    state,
+    orderIndex,
+    releaseBasis: extra.releaseBasis,
+    recheckReason: extra.recheckReason,
+  });
+}
+
 export async function seedDatabase(): Promise<void> {
   const exists = await db.ponds.count();
   if (exists > 0) return;
@@ -106,7 +140,7 @@ export async function seedDatabase(): Promise<void> {
     observation('obs-b3', SEED_IDS.pondB, '2026-09-14', 1.168, 28, 36, 2),
     observation('obs-c1', SEED_IDS.pondC, '2026-08-25', 1.195, 26, 35, 1),
     observation('obs-c2', SEED_IDS.pondC, '2026-09-05', 1.222, 27, 33, 2),
-    observation('obs-c3', SEED_IDS.pondC, '2026-09-18', 1.248, 25, 31, 2),
+    observation('obs-c3', SEED_IDS.pondC, '2026-09-18', 1.248, 25, 28, 2),
     observation('obs-d1', SEED_IDS.pondD, '2026-08-21', 1.038, 30, 50, 4),
     observation('obs-d2', SEED_IDS.pondD, '2026-09-01', 1.055, 31, 48, 3),
     observation('obs-d3', SEED_IDS.pondD, '2026-09-12', 1.074, 29, 46, 2),
@@ -118,23 +152,41 @@ export async function seedDatabase(): Promise<void> {
   // ---------------- 离子组分分析（含达标 / 接近 / 未达标三种判定） ----------------
   const assays: Assay[] = [
     assay('assay-a1', SEED_IDS.pondA, '2026-09-22', 0.12, 6.4, 42.5, 88.2, '盐湖中心化验室'),
+    assay('assay-a2', SEED_IDS.pondA, '2026-09-29', 1.18, 21.2, 30.4, 70.1, '盐湖中心化验室'),
     assay('assay-b1', SEED_IDS.pondB, '2026-09-14', 0.72, 15.5, 21.8, 58.4, '盐湖中心化验室'),
+    assay('assay-b2', SEED_IDS.pondB, '2026-09-27', 1.08, 20.6, 18.9, 44.7, '盐湖中心化验室'),
     assay('assay-c1', SEED_IDS.pondC, '2026-09-05', 1.05, 18.2, 9.6, 26.1, '盐湖中心化验室'),
     assay('assay-c2', SEED_IDS.pondC, '2026-09-18', 1.32, 22.6, 8.4, 24.3, '盐湖中心化验室'),
     assay('assay-d1', SEED_IDS.pondD, '2026-09-24', 0.08, 4.2, 48.9, 96.5, '南部化验站'),
+    // 放行时依据的达标分析单，事后被化验室人工改回未达标 → schedule-d1 退回待复核
+    assay('assay-d2', SEED_IDS.pondD, '2026-09-28', 1.1, 20.8, 33.6, 78.3, '南部化验站', {
+      verdict: '未达标',
+      verdictManual: true,
+    }),
     assay('assay-e1', SEED_IDS.pondE, '2026-09-04', 0.48, 13.6, 24.2, 61.7, '南部化验站', {
       verdict: '接近',
       verdictManual: true,
     }),
   ];
 
-  // ---------------- 走水编排（覆盖四种状态，orderIndex 决定先后） ----------------
+  // ---------------- 走水编排（覆盖五种状态，orderIndex 决定先后） ----------------
+  // 已排 / 走水中带放行依据快照；schedule-d1 所依据的 assay-d2 已被化验室改回未达标，
+  // 因此处于「待复核（改判）」，等调度员重新确认；schedule-c1 样品达标但水位低于安全线，放行会被水位挡住。
   const schedules: Schedule[] = [
-    wrap<Schedule>({ id: 'schedule-a1', pondId: SEED_IDS.pondA, planDate: '2026-10-02', targetDensity: 1.115, volumeM3: 1200, operator: '韩江', state: '已排', orderIndex: 1 }),
-    wrap<Schedule>({ id: 'schedule-d1', pondId: SEED_IDS.pondD, planDate: '2026-10-04', targetDensity: 1.098, volumeM3: 1600, operator: '王锐', state: '已排', orderIndex: 2 }),
-    wrap<Schedule>({ id: 'schedule-b1', pondId: SEED_IDS.pondB, planDate: '2026-10-06', targetDensity: 1.175, volumeM3: 900, operator: '韩江', state: '走水中', orderIndex: 3 }),
-    wrap<Schedule>({ id: 'schedule-c1', pondId: SEED_IDS.pondC, planDate: '2026-10-12', targetDensity: 1.255, volumeM3: 600, operator: '李文', state: '待排', orderIndex: 4 }),
-    wrap<Schedule>({ id: 'schedule-e1', pondId: SEED_IDS.pondE, planDate: '2026-09-28', targetDensity: 1.15, volumeM3: 700, operator: '王锐', state: '已出卤', orderIndex: 5 }),
+    schedule('schedule-a1', SEED_IDS.pondA, '2026-10-02', 1.115, 1200, '韩江', '已排', 1, {
+      releaseBasis: releaseBasis('assay-a2', '2026-09-29'),
+      recheckReason: null,
+    }),
+    schedule('schedule-d1', SEED_IDS.pondD, '2026-10-04', 1.098, 1600, '王锐', '待复核', 2, {
+      releaseBasis: releaseBasis('assay-d2', '2026-09-28'),
+      recheckReason: '改判',
+    }),
+    schedule('schedule-b1', SEED_IDS.pondB, '2026-10-06', 1.175, 900, '韩江', '走水中', 3, {
+      releaseBasis: releaseBasis('assay-b2', '2026-09-27'),
+      recheckReason: null,
+    }),
+    schedule('schedule-c1', SEED_IDS.pondC, '2026-10-12', 1.255, 600, '李文', '待排', 4),
+    schedule('schedule-e1', SEED_IDS.pondE, '2026-09-28', 1.15, 700, '王锐', '已出卤', 5),
   ];
 
   await db.transaction('rw', db.ponds, db.gates, db.observations, db.assays, db.schedules, async () => {

@@ -91,6 +91,8 @@ export function buildProgressCsv(ponds: Pond[], observations: Observation[], ass
     '化验条数',
     '最近判定',
     '走水计划数',
+    '待复核数',
+    '放行依据日期',
     '已完成出卤数',
   ];
   const lines: string[] = [header.map(csvCell).join(',')];
@@ -100,6 +102,10 @@ export function buildProgressCsv(ponds: Pond[], observations: Observation[], ass
     const pondAssays = assays.filter((row) => row.pondId === pond.id).sort((a, b) => a.date.localeCompare(b.date));
     const latestAssay = pondAssays.length > 0 ? pondAssays[pondAssays.length - 1] : null;
     const pondSchedules = schedules.filter((row) => row.pondId === pond.id);
+    const recheckCount = pondSchedules.filter((row) => row.state === '待复核').length;
+    const basisDates = Array.from(
+      new Set(pondSchedules.map((row) => row.releaseBasis?.assayDate).filter((value): value is string => value !== undefined && value !== null)),
+    ).sort();
     lines.push(
       [
         pond.code,
@@ -116,6 +122,8 @@ export function buildProgressCsv(ponds: Pond[], observations: Observation[], ass
         pondAssays.length,
         latestAssay === null ? '—' : effectiveVerdict(latestAssay),
         pondSchedules.length,
+        recheckCount,
+        basisDates.length === 0 ? '—' : basisDates.join('|'),
         pondSchedules.filter((row) => row.state === '已出卤').length,
       ]
         .map(csvCell)
@@ -159,12 +167,13 @@ export function buildBriefingText(ponds: Pond[], observations: Observation[], as
     const pondAssays = assays.filter((row) => row.pondId === pond.id).sort((a, b) => a.date.localeCompare(b.date));
     const lastAssay = pondAssays.length > 0 ? pondAssays[pondAssays.length - 1] : null;
     const pending = schedules.filter((row) => row.pondId === pond.id && row.state !== '已出卤').length;
+    const recheck = schedules.filter((row) => row.pondId === pond.id && row.state === '待复核').length;
     lines.push(
       `· ${pond.code}（${pond.seriesName} / ${pond.stage} / ${pond.status}）最近密度 ${
         latest === null ? '无观测' : `${latest.densityGcm3} g/cm³（${latest.date}）`
       }，蒸发量 ${latest === null ? '—' : `${round1(latest.evapMm)} mm/d`}，组分判定 ${
         lastAssay === null ? '未化验' : effectiveVerdict(lastAssay)
-      }，待完成走水 ${pending} 条`,
+      }，待完成走水 ${pending} 条${recheck > 0 ? `（其中 ${recheck} 条待复核，需调度员重新确认）` : ''}`,
     );
   });
   return lines.join('\n');
